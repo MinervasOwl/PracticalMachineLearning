@@ -1,0 +1,146 @@
+---
+title: "Weight Lifting Project"
+author: "Hao Hong"
+date: "Sunday, May 24, 2015"
+output: html_document
+---
+
+# Introduction
+This is a course project for "Practical Machine Learning" on COURSERA. The goal of this project is to predict the manner in which people do the weight-lifting exercise. I tried the decision tree model and the random forest model and found the latter outperform the former. With the random forest model, I correctly predicted 19 of the 20 behavior manners in the testing set.
+
+# Data 
+I used the weight lifting data developed by Velloso et al. (2013) in this project. In their data collection, subjects were asked to perform barbell lifts correctly and incorrectly in 5 different ways. Data were collected from accelerometers on the belt, forearm, arm, and dumbbell of 6 participants. More information about the data is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+I downloaded the data for this project from the Coursera website. 
+
+```{r, cache = TRUE, echo = FALSE}
+setInternet2(use = TRUE) 
+temp1 <- tempfile()
+url_train <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+download.file(url_train,temp1)
+trainingRaw <- read.csv(temp1, header = TRUE)
+unlink(temp1)
+
+temp2 <- tempfile()
+url_test <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+download.file(url_test,temp2)
+
+testing <- read.csv(temp2, header = TRUE)
+unlink(temp2)
+```
+The data has been already sliced into the training data (`r nrow(trainingRaw)` observations) and the testing data (`r nrow(testing)` observations). 
+
+The variable denoting the weight lifting manner is the "classe" variable in the training and testing data set. It takes five values between letters "A" to "E". The values of the "classe" are defined as follows: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E).
+
+# Data Cleaning
+The data set includes two types of data: real-time 45Hz readings from sensors, and sliding window data calculated on 2.5-second windows. The test data only contains features collected by real-time readings. So I only select the real-time data to train my model (observations with valued "no" in the "new_window" variable). Correspondingly, I dropped features calculated in the sliding windows (variabes with prefix of average, variance, standard deviation, max, min, amplitude, kurtosis and skewness). I also dropped information that are not obtained by the movement sensors: "user_name", "raw_timestamp_part_1", "raw_timestamp_part_2", "cvtd_timestamp", "new_window", "num_window", which are the first 7 variables in the raw training data.
+
+```{r, echo=FALSE}
+training <- trainingRaw[trainingRaw$new_window == "no",]
+NonMissing <- (colSums(is.na(testing)) == 0)
+index <- which(NonMissing)
+training <- training[, index]
+training <- training[, 8:ncol(training)]
+```
+
+The selected training data includes `r nrow(training)` observations and `r ncol(training) - 1` features. The names of these features are as follows:
+```{r, echo=FALSE}
+names(training[,-ncol(training)])[order(names(training[,-ncol(training)]))]
+```
+
+# Model Training
+To reduce training time, I use PCA to subtract information from features. After centering and scaling, it is reported that 25 PCA features are needed to capture 95% of variation in the data. So I select 25 features from the original `r ncol(training) - 1` features. I draw a graph of the classe variable (displayed by colors) against the first two PCA vectors. As can be seen below, behaviors do cluster in some areas, especially for class A behavior and class E behavior. But among most areas, different behaviors mingle together. Throughout this project, I set the seed for randomization at 128. 
+
+```{r, echo=FALSE, cache = TRUE}
+library(caret)
+library(ggplot2)
+set.seed(128)
+tmp <- training[,-ncol(training)]
+preP <- preProcess(tmp, method = "pca")
+print(preP)
+preP <- preProcess(tmp, method = "pca", pcaComp = 25)
+trainingPCA <- predict(preP, tmp)
+p <- qplot(trainingPCA[,1], trainingPCA[,2], col = training$classe)
+```
+
+I first use a tree model. Apparently, the model predict too many class A behavior and too few class D behavior. 
+I get an accuracy of 0.400. 
+```{r, cache = TRUE}
+ctrl <- trainControl(allowParallel=TRUE)
+model1 <- train(training$classe ~ . , method = "rpart", trControl = ctrl, data = trainingPCA)
+model1$finalModel
+print(model1)
+```
+
+Then I try a random forest model. I am able to get a better prediction accuracy at 0.974. The out of bag estimate of the error rate is 1.57%. 
+
+```{r, cache = TRUE}
+model2 <- train(training$classe ~ . , method = "rf", trControl = ctrl, data = trainingPCA)
+model2$finalModel
+print(model2)
+```
+
+Although I have used the PCA method to reduce features, the model above still takes a hour to train. Therefore I look at the importance of variables for this random forest model. 
+```{r}
+library(caret)
+imp <- varImp(model2)
+print(imp)
+```
+
+Plotting the two most important variables gives this colorful graph, I see different types of behavior cluster more closely than in the first figure. 
+```{r, echo =FALSE}
+qplot(trainingPCA$PC8, trainingPCA$PC12, col = training$classe)
+```
+
+For the third model, I continue to use the random forest model but only use only the 10 most important PCA vectors in model 2.  
+```{r, cache = TRUE}
+imp <- varImp(model2)
+selectPCA <- trainingPCA[,order(imp$importance,decreasing = TRUE)[1:10] ]
+model3 <- train(training$classe ~ . , method = "rf", trControl = ctrl, data = selectPCA)
+model3$finalModel
+print(model3)
+```
+The prediction accuracy is 0.944, lower than in model 2. The out of bag estimate of the error rate is 4.02%, more than 2.5 times of the OOB estimate of the error rate in model 2. 
+
+# Prediction
+
+```{r, echo=FALSE}
+testingS <- testing[, index]
+testingS <- testingS[, 8:(ncol(testingS)-1)]
+
+prediction1 <- predict(model1, newdata = predict(preP, testingS))
+prediction2 <- predict(model2, newdata = predict(preP, testingS))
+prediction3 <- predict(model3, newdata = predict(preP, testingS)[,order(imp$importance,decreasing = TRUE)[1:10] ])
+
+# Produce the prediction files
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+
+pml_write_files(prediction2)
+```
+
+Now I pesent the prediction results on the test set using each of the three models:
+```{r}
+# Predictions on test set by the decision tree method
+print(prediction1)
+# Predictions on test set by the random forest model
+print(prediction2)
+# Predictions on test set by the random forest model, using only 10 PCA vectors
+print(prediction3)
+```
+
+Compared with the random forest models (model 2 and 3), the decision tree model predicts more class A behavior and does not predict class B and C behavior. The difference between model 2 and 3 lies in that model 3 classifies three behavior as in class "A" while model 2 predicts them as in class "B". 
+
+After submitting predictions from the random forest model to the Coursera Practical Machine Learning Website, I found that model 2 correctly predicts 19 of the 20 cases, and model 3 correctly predicts 16 of 20 cases. The decision tree model, however, only predicts 8 out of 20 cases. 
+
+# Conclusion
+In this project, I have tried two methods and three models to predict manners of exercise. The random forest model performs better than the decision tree model both in the accuracy of held-out samples in the training set and in prediction accuracy of the test set. 
+
+# Reference
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+
